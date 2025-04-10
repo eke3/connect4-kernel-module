@@ -1,16 +1,16 @@
 obj-m += fourinarow.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
+CFLAGS_fourinarow.o := -Wno-unused-result
 
 all:
 	make -C $(KDIR) M=$(PWD) modules
-	sudo su
 
 .PHONY: ins rm clean
 
 ins:
-	insmod fourinarow.ko
-	chmod a+r /dev/fourinarow
+	sudo insmod fourinarow.ko
+	sudo chmod 666 /dev/fourinarow
 
 rm:
 	rmmod fourinarow

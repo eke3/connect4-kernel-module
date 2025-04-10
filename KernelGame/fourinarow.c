@@ -8,125 +8,230 @@
 #include <linux/kernel.h>
 #include <linux/random.h>
 
-#define DEVICE_NAME "fourinarow"
-#define CLASS_NAME "fourinarow"
-#define BUFFER_CAPACITY 113
-#define CMD_BUFFER_CAPACITY 8
+#define BOARD_CMD "BOARD"
 #define BOARD_HEIGHT 8
 #define BOARD_WIDTH 8
-#define CMD_ARG0_LEN 6
-#define RESET_CMD "RESET "
-#define BOARD_CMD "BOARD"
-#define DROP_CHIP_CMD "DROPC "
+#define BUFFER_CAPACITY 113
+#define CMD_BUFFER_CAPACITY 8
+#define CLASS_NAME "fourinarow"
 #define COM_TURN_CMD "CTURN"
-#define YELLOW "Y"
-#define YELLOW_CHIP 'Y'
-#define RED "R"
+#define DEVICE_NAME "fourinarow"
+#define DROP_CHIP_CMD "DROPC "
+#define FOUR 4
+#define INVALID_CHIP 'X'
+#define MAX_TURNS 64
+#define TERM_BUFFER '\0'
+#define NO_CHIP '0'
+#define NO_GAME "NOGAME\n"
+#define OK "OK\n"
+#define OUT_OF_TURN "OOT\n"
 #define RED_CHIP 'R'
+#define RESET_CMD "RESET "
+#define R "R"
 #define TURN_COM 1
 #define TURN_PLAYER 0
-#define NO_CHIP '0'
-#define MAX_TURNS 64
-
-typedef enum {
-    RESET,
-    BOARD,
-    DROP_CHIP,
-    COM_TURN
-} Command;
+#define Y "Y"
+#define YELLOW_CHIP 'Y'
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Eric Ekey");
 MODULE_DESCRIPTION("Connect Four Character Device");
 
-static char board[BOARD_HEIGHT][BOARD_WIDTH];
-static unsigned int game_active;
-static unsigned int current_turn;
-static char player_chip;
-static char com_chip;
-static unsigned int turn_counter;
+typedef enum {
+    BOARD,
+    COM_TURN,
+    DROP_CHIP,
+    INVALID,
+    RESET
+} Command;
 
-static dev_t dev_num;
+typedef enum {
+    CONTINUE,
+    DRAW,
+    LOSE,
+    WIN
+} WLD;
+
+static struct cdev CDEV_fourinarow;
 static struct class* CLASS_fourinarow;
 static struct device* DEVICE_fourinarow;
-static struct cdev character_device;
+static dev_t device_number;
 
-static char output_buffer[BUFFER_CAPACITY];
-static size_t output_buffer_size;
+static char board[BOARD_HEIGHT][BOARD_WIDTH];
+static char com_chip;
+static unsigned int current_turn;
+static unsigned int game_active;
+static char player_chip;
+static char read_buffer[BUFFER_CAPACITY];
+static size_t read_buffer_size;
+static unsigned int turn_counter;
+
+static void checkWinLoseDraw(void);
+static void executeBoard(void);
+static void executeComTurn(void);
+static void executeDropChip(char*);
+static void executeReset(char*);
+static Command getWhichCommand(char*);
+
+static void checkWinLoseDraw(void) {
+    char chip_to_check;
+    int i, j;
+    WLD player_status = CONTINUE;
+    int someone_won = 0;
+
+    switch (current_turn) {
+        case TURN_PLAYER:
+            chip_to_check = player_chip;
+            break;
+        case TURN_COM:
+            chip_to_check = com_chip;
+            break;
+        default:
+            chip_to_check = INVALID_CHIP;
+    }
+
+    if (current_turn == TURN_PLAYER) {
+        chip_to_check = player_chip;
+    } else {
+        chip_to_check = com_chip;
+    }
+
+    // check if the someone won and update player_status
+    for (i = 0; i < BOARD_HEIGHT; i++) {
+        for (j = 0; j < BOARD_WIDTH; j++) {
+            if (board[i][j] == chip_to_check) {
+                // check horizontal
+                if (j <= BOARD_WIDTH-FOUR) {
+                    if (board[i][j+1] == chip_to_check && board[i][j+2] == chip_to_check && board[i][j+3] == chip_to_check) {
+                        someone_won = 1;
+                    }
+                }
+
+                // check vertical
+                if (i <= BOARD_HEIGHT-FOUR) {
+                    if (board[i+1][j] == chip_to_check && board[i+2][j] == chip_to_check && board[i+3][j] == chip_to_check) {
+                        someone_won = 1;
+                    }
+                }
+
+                // check diagonal up-right
+                if (i <= BOARD_HEIGHT-FOUR && j <= BOARD_WIDTH-FOUR) {
+                    if (board[i+1][j+1] == chip_to_check && board[i+2][j+2] == chip_to_check && board[i+3][j+3] == chip_to_check) {
+                        someone_won = 1;
+                    }
+                }
+
+                // check diagonal down-right
+                if (i >= FOUR-1 && j <= BOARD_WIDTH-FOUR) {
+                    if (board[i-1][j+1] == chip_to_check && board[i-2][j+2] == chip_to_check && board[i-3][j+3] == chip_to_check) {
+                        someone_won = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (someone_won && current_turn == TURN_PLAYER) {
+        player_status = WIN;
+    }
+    if (someone_won && current_turn == TURN_COM) {
+        player_status = LOSE;
+    }
+    if (player_status == CONTINUE && turn_counter == MAX_TURNS) {
+        player_status = DRAW;
+    }
+
+    switch (player_status) {
+        case WIN:
+            game_active = 0;
+            memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+            read_buffer_size = 0;
+            read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, "WIN\n");
+            break;
+        case LOSE:
+            game_active = 0;
+            memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+            read_buffer_size = 0;
+            read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, "LOSE\n");
+            break;
+        case DRAW:
+            game_active = 0;
+            memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+            read_buffer_size = 0;
+            read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, "TIE\n");
+            break;
+        default:
+            break;
+    }
+}
 
 static void executeBoard(void) {
     int i;
-    memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-    output_buffer_size = 0;
-    output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "\n  ABCDEFGH\n  --------\n");
+
+    memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+    read_buffer_size = 0;
+    read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, "\n  ABCDEFGH\n  --------\n");
 
     for (i = BOARD_HEIGHT-1; i >= 0; i--) {
-        output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "%d|%c%c%c%c%c%c%c%c\n", i+1, board[i][0], board[i][1], board[i][2], board[i][3], board[i][4], board[i][5], board[i][6], board[i][7]);
+        read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, "%d|%c%c%c%c%c%c%c%c\n", i+1, board[i][0], board[i][1], board[i][2], board[i][3], board[i][4], board[i][5], board[i][6], board[i][7]);
     }
-    output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "\n\n");
+    read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, "\n\n");
 }
 
-static Command getWhichCommand(char* command) {
-
-    printk(KERN_INFO "\"%s\"\n\"%s\"\n\"%s\"\n\"%s\"\n\"%s\"\n", command, RESET_CMD, BOARD_CMD, DROP_CHIP_CMD, COM_TURN_CMD);
-    if (strncmp(command, RESET_CMD, sizeof(RESET_CMD)-1) == 0) {
-        return RESET;
-    } else if (strncmp(command, BOARD_CMD, sizeof(BOARD_CMD)-1) == 0) {
-        return BOARD;
-    } else if (strncmp(command, DROP_CHIP_CMD, sizeof(DROP_CHIP_CMD)-1) == 0) {
-        return DROP_CHIP;
-    } else if (strncmp(command, COM_TURN_CMD, sizeof(COM_TURN_CMD)-1) == 0) {
-        return COM_TURN;
-    } else {
-        return -1;
-    }
-    return -1;
-}
-
-static void executeReset(char* command) {
-    if (strncmp(command+sizeof(RESET_CMD)-1, YELLOW, sizeof(YELLOW)-1) == 0) {
-        // Start game with player as yellow.
-        memset(board, NO_CHIP, sizeof(board));
-        game_won = 0;
-        current_turn = TURN_PLAYER;
-        player_chip = YELLOW_CHIP;
-        com_chip = RED_CHIP;
-        game_active = 1;
-    } else if (strncmp(command+sizeof(RESET_CMD)-1, RED, sizeof(RED)-1) == 0) {
-        // Start game with player as red.
-        memset(board, NO_CHIP, sizeof(board));
-        game_won = 0;
-        current_turn = TURN_COM;
-        player_chip = RED_CHIP;
-        com_chip = YELLOW_CHIP;
-        game_active = 1;
-    } else {
-        // Invalid command
-        return;
-    }
-    memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-    output_buffer_size = 0;
-    output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "OK\n");
-}
-
-static void executeDropChip(char* command) {
-    printk(KERN_INFO "executeDropChip() command: %s\n", command);
-    int i;
+static void executeComTurn(void) {
     int column_to_drop;
-    char cmd_column;
+    int i;
     int placed_chip = 0;
 
     if (!game_active) {
-        memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-        output_buffer_size = 0;
-        output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "NOGAME\n");
+        memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+        read_buffer_size = 0;
+        read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, NO_GAME);
+        return;
+    }
+
+    if (current_turn != TURN_COM) {
+        memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+        read_buffer_size = 0;
+        read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, OUT_OF_TURN);
+        return;
+    }
+
+    while (!placed_chip) {
+        column_to_drop = prandom_u32() % BOARD_WIDTH;
+        for (i = 0; i < BOARD_HEIGHT; i++) {
+            if (board[i][column_to_drop] == NO_CHIP) {
+                board[i][column_to_drop] = com_chip;
+                placed_chip = 1;
+                turn_counter++;
+                memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+                read_buffer_size = 0;
+                read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, OK);
+                checkWinLoseDraw();
+                current_turn = TURN_PLAYER;
+                break;
+            }
+        }
+    }
+}
+
+static void executeDropChip(char* command) {
+    char cmd_column;
+    int column_to_drop;
+    int i;
+    int placed_chip = 0;
+
+    if (!game_active) {
+        memset(read_buffer, TERM_BUFFER, BUFFER_CAPACITY);
+        read_buffer_size = 0;
+        read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, NO_GAME);
         return;
     }
 
     if (current_turn != TURN_PLAYER) {
-        memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-        output_buffer_size = 0;
-        output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "OOT\n");
+        memset(read_buffer, TERM_BUFFER, BUFFER_CAPACITY);
+        read_buffer_size = 0;
+        read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, OUT_OF_TURN);
         return;
     }
 
@@ -158,89 +263,85 @@ static void executeDropChip(char* command) {
             break;
         default:
             printk(KERN_INFO "Invalid column: %c\n", cmd_column);
-            column_to_drop = -1;
+            return;
+    }
+
+    for (i = 0; i < BOARD_HEIGHT; i++) {
+        if (board[i][column_to_drop] == NO_CHIP) {
+            board[i][column_to_drop] = player_chip;
+            placed_chip = 1;
+            turn_counter++;
+            memset(read_buffer, NO_CHIP, BUFFER_CAPACITY);
+            read_buffer_size = 0;
+            read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, OK);
+            checkWinLoseDraw();
+            current_turn = TURN_COM;
             break;
-    }
-
-    if (column_to_drop != -1) {
-        for (i = 0; i < BOARD_HEIGHT; i++) {
-            if (board[i][column_to_drop] == NO_CHIP) {
-                board[i][column_to_drop] = player_chip;
-                placed_chip = 1;
-                turn_counter++;
-                current_turn = TURN_COM;
-                memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-                output_buffer_size = 0;
-                output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "OK\n");
-                break;
-            }
-        }
-    } 
-}
-
-static void executeComTurn(void) {
-    int i;
-    int column_to_drop;
-    int placed_chip = 0;
-
-    if (!game_active) {
-        memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-        output_buffer_size = 0;
-        output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "NOGAME\n");
-        return;
-    }
-
-    if (current_turn != TURN_COM) {
-        memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-        output_buffer_size = 0;
-        output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "OOT\n");
-        return;
-    }
-
-    while (!placed_chip) {
-        column_to_drop = prandom_u32() % BOARD_WIDTH;
-        for (i = 0; i < BOARD_HEIGHT; i++) {
-            if (board[i][column_to_drop] == NO_CHIP) {
-                board[i][column_to_drop] = com_chip;
-                placed_chip = 1;
-                turn_counter++;
-                current_turn = TURN_PLAYER;
-                memset(output_buffer, NO_CHIP, BUFFER_CAPACITY);
-                output_buffer_size = 0;
-                output_buffer_size += snprintf(output_buffer + output_buffer_size, BUFFER_CAPACITY - output_buffer_size, "OK\n");
-                break;
-            }
         }
     }
 }
 
-static void checkWinLoseDraw(void) {
+static void executeReset(char* command) {
+    if (strncmp(command+sizeof(RESET_CMD)-1, Y, sizeof(Y)-1) == 0) {
+        // Start game with player as yellow.
+        memset(board, NO_CHIP, sizeof(board));
+        current_turn = TURN_PLAYER;
+        player_chip = YELLOW_CHIP;
+        com_chip = RED_CHIP;
+        game_active = 1;
+    } else if (strncmp(command+sizeof(RESET_CMD)-1, R, sizeof(R)-1) == 0) {
+        // Start game with player as red.
+        memset(board, NO_CHIP, sizeof(board));
+        current_turn = TURN_COM;
+        player_chip = RED_CHIP;
+        com_chip = YELLOW_CHIP;
+        game_active = 1;
+    } else {
+        // Invalid command
+        return;
+    }
 
+    memset(read_buffer, TERM_BUFFER, BUFFER_CAPACITY);
+    read_buffer_size = 0;
+    read_buffer_size += snprintf(read_buffer + read_buffer_size, BUFFER_CAPACITY - read_buffer_size, OK);
+}
 
-
+static Command getWhichCommand(char* command) {
+    if (strncmp(command, RESET_CMD, sizeof(RESET_CMD)-1) == 0) {
+        return RESET;
+    }
+    if (strncmp(command, BOARD_CMD, sizeof(BOARD_CMD)-1) == 0) {
+        return BOARD;
+    }
+    if (strncmp(command, DROP_CHIP_CMD, sizeof(DROP_CHIP_CMD)-1) == 0) {
+        return DROP_CHIP;
+    }
+    if (strncmp(command, COM_TURN_CMD, sizeof(COM_TURN_CMD)-1) == 0) {
+        return COM_TURN;
+    }
+    return INVALID;
 }
 
 static ssize_t dev_read(struct file *filep, char *user_buffer, size_t len, loff_t *offset) {
-    // For testing
     ssize_t bytes_to_copy;
-    if (*offset >= output_buffer_size) {
+
+    if (*offset >= read_buffer_size) {
         return 0;
     }
 
-    bytes_to_copy = min((size_t)(output_buffer_size - *offset), len);
-    copy_to_user(user_buffer, output_buffer + *offset, bytes_to_copy);
+    bytes_to_copy = min((size_t)(read_buffer_size - *offset), len);
+    copy_to_user(user_buffer, read_buffer + *offset, bytes_to_copy);
     *offset += bytes_to_copy;
     return bytes_to_copy;
 }
 
 static ssize_t dev_write(struct file *filep, const char *user_buffer, size_t len, loff_t *offset) {
-    size_t bytes_to_copy = min(len, (size_t)CMD_BUFFER_CAPACITY);
     char command[CMD_BUFFER_CAPACITY];
-    memset(command, NO_CHIP, CMD_BUFFER_CAPACITY);
-    copy_from_user(command, user_buffer, bytes_to_copy);
-    command[bytes_to_copy-1] = '\0';
+    size_t bytes_to_copy = min(len, (size_t)CMD_BUFFER_CAPACITY);
 
-    printk("Command written: %s", command);
+    memset(command, TERM_BUFFER, CMD_BUFFER_CAPACITY);
+    copy_from_user(command, user_buffer, bytes_to_copy);
+    command[bytes_to_copy-1] = TERM_BUFFER;
 
     switch (getWhichCommand(command)) {
         case RESET:
@@ -263,13 +364,10 @@ static ssize_t dev_write(struct file *filep, const char *user_buffer, size_t len
             printk("Command: INVALID\n");
             break;
     }
-
-
-
     return len;
 }
 
-static struct file_operations file_operations = {
+static struct file_operations device_operations = {
     .owner = THIS_MODULE,
     .read = dev_read,
     .write = dev_write,
@@ -277,33 +375,28 @@ static struct file_operations file_operations = {
 
 static int __init init_fourinarow(void) {
     printk(KERN_INFO "Loading %s module...\n", DEVICE_NAME);
-    memset(board, NO_CHIP, sizeof(board));
-    alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
-
-    cdev_init(&character_device, &file_operations);
-    character_device.owner = THIS_MODULE;
-    cdev_add(&character_device, dev_num, 1);
+    alloc_chrdev_region(&device_number, 0, 1, DEVICE_NAME);
+    cdev_init(&CDEV_fourinarow, &device_operations);
+    CDEV_fourinarow.owner = THIS_MODULE;
+    cdev_add(&CDEV_fourinarow, device_number, 1);
 
     CLASS_fourinarow = class_create(THIS_MODULE, CLASS_NAME);
-    DEVICE_fourinarow = device_create(CLASS_fourinarow, NULL, dev_num, NULL, DEVICE_NAME);
-    output_buffer_size = 0;
-    game_active = 0;
-
-
-    // for testing
-    executeBoard();
-
-
+    DEVICE_fourinarow = device_create(CLASS_fourinarow, NULL, device_number, NULL, DEVICE_NAME);
     printk(KERN_INFO "Module loaded at /dev/%s\n", DEVICE_NAME);
+
+    memset(board, NO_CHIP, sizeof(board));
+    turn_counter = 0;
+    read_buffer_size = 0;
+    game_active = 0;
     return 0;
 }
 
 static void __exit exit_fourinarow(void) {
     printk(KERN_INFO "Unloading %s module...\n", DEVICE_NAME);
-    device_destroy(CLASS_fourinarow, dev_num);
+    device_destroy(CLASS_fourinarow, device_number);
     class_destroy(CLASS_fourinarow);
-    cdev_del(&character_device);
-    unregister_chrdev_region(dev_num, 1);
+    cdev_del(&CDEV_fourinarow);
+    unregister_chrdev_region(device_number, 1);
     printk(KERN_INFO "Module unloaded from /dev/%s\n", DEVICE_NAME);
 }
 
