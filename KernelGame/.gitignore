@@ -3,3 +3,4 @@
 *mod*
 Module.symvers
 .vscode/
+*.ko
