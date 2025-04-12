@@ -1,12 +1,18 @@
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/fs.h>
+// File:    fourinarow.c
+// Author:  Eric Ekey
+// Date:    04/12/2025
+// Desc:    This file contains the code for a Connect 4 game played on a
+//          custom mounted character device.
+
 #include <linux/cdev.h>
 #include <linux/device.h>
-#include <linux/uaccess.h>
-#include <linux/slab.h>
+#include <linux/fs.h>
+#include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/random.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
 
 #define BOARD_CMD "BOARD"
 #define BOARD_HEIGHT 8
@@ -37,6 +43,7 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Eric Ekey");
 MODULE_DESCRIPTION("Connect Four Character Device");
 
+// Enum for commands the user can send to the device.
 typedef enum {
     BOARD,
     COM_TURN,
@@ -45,6 +52,7 @@ typedef enum {
     RESET
 } Command;
 
+// Enum for the status of the game.
 typedef enum {
     CONTINUE,
     DRAW,
@@ -66,12 +74,53 @@ static char read_buffer[BUFFER_CAPACITY];
 static size_t read_buffer_size;
 static unsigned int turn_counter;
 
+#pragma region Prototypes
+
+// void checkWinLoseDraw(void)
+// Description: Checks if the game is won, lost, drawn, or still going.
+// Preconditions: Game is in progress.
+// Postconditions: Game status is updated.
+// Returns: None.
 static void checkWinLoseDraw(void);
+
+// void executeBoard(void)
+// Description: Formats the board for printing and loads it to the read buffer.
+// Preconditions: User sends the BOARD command.
+// Postconditions: The board is loaded into the read buffer.
+// Returns: None.
 static void executeBoard(void);
+
+// void executeComTurn(void)
+// Description: Handles the computer's turn.
+// Preconditions: User sends the CTURN command and it is the computer's turn.
+// Postconditions: Computer places a chip in the board.
+// Returns: None.
 static void executeComTurn(void);
+
+// void executeDropChip(char*)
+// Description: Handles the player's turn.
+// Preconditions: User sends the DROPC command and it is the player's turn.
+// Postconditions: Player places a chip in the board.
+// Returns: None.
 static void executeDropChip(char*);
+
+// void executeReset(char*)
+// Description: Resets the game.
+// Preconditions: User sends the RESET command.
+// Postconditions: Game is reset.
+// Returns: None.
 static void executeReset(char*);
+
+// Command getWhichCommand(char*)
+// Description: Determines which command the user sent.
+// Preconditions: User sends a command.
+// Postconditions: Command is returned.
+// Returns: Command.
 static Command getWhichCommand(char*);
+
+#pragma endregion Prototypes
+
+#pragma region Implementations
 
 static void checkWinLoseDraw(void) {
     char chip_to_check;
@@ -131,6 +180,7 @@ static void checkWinLoseDraw(void) {
         }
     }
 
+    // update player status
     if (someone_won && current_turn == TURN_PLAYER) {
         player_status = WIN;
     }
@@ -322,6 +372,10 @@ static Command getWhichCommand(char* command) {
     return INVALID;
 }
 
+#pragma endregion Implementations
+
+#pragma region Device Operations
+
 static ssize_t dev_read(struct file *filep, char *user_buffer, size_t len, loff_t *offset) {
     ssize_t bytes_to_copy;
 
@@ -373,6 +427,11 @@ static struct file_operations device_operations = {
     .write = dev_write,
 };
 
+static char* permissions(struct device* device, umode_t* mode) {
+    *mode = 0666;   
+    return NULL;
+}
+
 static int __init init_fourinarow(void) {
     printk(KERN_INFO "Loading %s module...\n", DEVICE_NAME);
     alloc_chrdev_region(&device_number, 0, 1, DEVICE_NAME);
@@ -381,6 +440,7 @@ static int __init init_fourinarow(void) {
     cdev_add(&CDEV_fourinarow, device_number, 1);
 
     CLASS_fourinarow = class_create(THIS_MODULE, CLASS_NAME);
+    CLASS_fourinarow->devnode = permissions;
     DEVICE_fourinarow = device_create(CLASS_fourinarow, NULL, device_number, NULL, DEVICE_NAME);
     printk(KERN_INFO "Module loaded at /dev/%s\n", DEVICE_NAME);
 
@@ -399,6 +459,8 @@ static void __exit exit_fourinarow(void) {
     unregister_chrdev_region(device_number, 1);
     printk(KERN_INFO "Module unloaded from /dev/%s\n", DEVICE_NAME);
 }
+
+#pragma endregion Device Operations
 
 module_init(init_fourinarow);
 module_exit(exit_fourinarow);
