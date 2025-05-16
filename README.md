@@ -1,4 +1,4 @@
-# CMSC 421 Project 3
+# Connect4 Kernel Module
 
 ## Introduction
 **Platforms** - Linux
@@ -11,10 +11,6 @@ This project is a Linux kernel module that creates a character device: /dev/four
 * Maintains state of an 8x8 game board
 * Supports playing against the computer (random moves)
 
-## Contact
-* **Contributor** - Eric Ekey
-* **Student ID** - XR06051
-* **Email** - eekey1@umbc.edu
 
 ## Installation and Setup
 ### Setup
